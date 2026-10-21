@@ -25,7 +25,8 @@ const ENV_BINDING_RE = /\benv\s*\.\s*(DB|KV|STORAGE|QUEUE_\w+|AI|SANDBOX)\b/;
 /**
  * Infer which Cloudflare bindings a source file uses.
  *
- * Read Vite's module metadata, then walk the AST only for potential env bindings.
+ * Read Vite's module metadata, then walk the AST only for potential env bindings. Files that
+ * contain neither a `void/` specifier nor an env binding are not parsed.
  */
 export function inferBindingsFromSource(code: string, filename: string): InferredBindings {
   const result: InferredBindings = {
@@ -39,6 +40,14 @@ export function inferBindingsFromSource(code: string, filename: string): Inferre
     needsLive: false,
     needsEmail: false,
   };
+
+  // Only `void/*` specifiers and `env.<BINDING>` members can set a flag. A specifier spelled with
+  // escapes (`'vo\u0069d/db'`) has no "void/" in the source text, so a backslash also forces a
+  // parse. Keep these conditions in sync with `recordModuleReference` and the env walk below.
+  const mayUseEnv = ENV_BINDING_RE.test(code);
+  if (!mayUseEnv && !code.includes('void/') && !code.includes('\\')) {
+    return result;
+  }
 
   let parsed: ReturnType<typeof parseSync>;
   try {
@@ -110,7 +119,7 @@ export function inferBindingsFromSource(code: string, filename: string): Inferre
     }
   }
 
-  if (!ENV_BINDING_RE.test(code)) {
+  if (!mayUseEnv) {
     return result;
   }
 

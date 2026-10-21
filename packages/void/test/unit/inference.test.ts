@@ -1,9 +1,16 @@
-import { describe, expect, it } from 'vite-plus/test';
+import { parseSync } from 'vite';
+import { describe, expect, it, vi } from 'vite-plus/test';
 import {
   inferBindingsFromSource,
   mergeBindings,
   type InferredBindings,
 } from '../../src/inference/walk.ts';
+
+// Wrap Vite's parseSync to count the files that inference parses.
+vi.mock('vite', async (importOriginal) => {
+  const vite = await importOriginal<{ parseSync: typeof parseSync }>();
+  return { ...vite, parseSync: vi.fn(vite.parseSync) };
+});
 
 const NO_BINDINGS: InferredBindings = {
   needsD1: false,
@@ -106,6 +113,29 @@ describe('inferBindingsFromSource', () => {
       })
     `;
     expect(inferBindingsFromSource(code, 'test.ts')).toEqual(NO_BINDINGS);
+  });
+
+  it.each([
+    "import { defineHandler } from 'void';\nexport const GET = defineHandler(() => 1);",
+    "import x from 'voidx/db';",
+    'export const k = 1;',
+    '',
+  ])('skips parsing files that cannot reference a binding: %j', (code) => {
+    vi.mocked(parseSync).mockClear();
+    expect(inferBindingsFromSource(code, 'test.ts')).toEqual(NO_BINDINGS);
+    expect(parseSync).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    "'\\u0076oid/db'",
+    "'v\\x6fid/db'",
+    "'vo\\u{69}d/db'",
+    "'voi\\d/db'",
+    "'void\\/db'",
+    "'vo\\\nid/db'",
+  ])('detects escaped specifiers without the text "void/": %j', (specifier) => {
+    const code = `import { db } from ${specifier};`;
+    expect(inferBindingsFromSource(code, 'test.ts')).toEqual({ ...NO_BINDINGS, needsD1: true });
   });
 
   it.each(MODULE_BINDINGS)('detects value imports from %s', (source, binding) => {
