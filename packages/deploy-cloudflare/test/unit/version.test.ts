@@ -8,6 +8,7 @@ import {
   deployCloudflareVersionTriggers,
   encodeCloudflareVersionMessage,
   extractWorkersDevSubdomain,
+  normalizeReadinessAccessOrigin,
   normalizeWorkersDevSubdomain,
   parseCloudflareVersionMessage,
   readCloudflareTriggerConfig,
@@ -3296,6 +3297,42 @@ describe('Cloudflare version activation', () => {
     const probeCalls = (fetcher: { mock: { calls: Array<unknown> } }) =>
       fetcher.mock.calls as unknown as Array<[string, RequestInit]>;
 
+    it.each([
+      ['https://App.Example.com/', 'https://app.example.com'],
+      ['https://app.example.com:443', 'https://app.example.com'],
+      ['https://app.example.com:8443', 'https://app.example.com:8443'],
+      ['https://*.example.com', undefined],
+      ['https://app*.example.com', undefined],
+      ['http://app.example.com', undefined],
+      ['https://app.example.com/path', undefined],
+      [undefined, undefined],
+    ])('normalizes the readiness Access origin %s to %s', (value, expected) => {
+      expect(normalizeReadinessAccessOrigin(value)).toBe(expected);
+    });
+
+    it('does not let the opt-in origin bypass the workers.dev guard', async () => {
+      const runWrangler = runner({ upload: ok(`Worker Version ID: ${NEXT}`) });
+      const fetcher = vi.fn(async () => Response.json({ ready: true }));
+
+      await expect(
+        activateCloudflareVersion({
+          runWrangler,
+          verifyUploader: () => true,
+          workerName: 'private-app',
+          workersDevSubdomain: 'cached',
+          readinessHeaders: accessHeaders,
+          readinessHeadersOrigin: 'https://private-app.cached.workers.dev',
+          readinessAttempts: 1,
+          message: encodeCloudflareVersionMessage(
+            [],
+            triggersWith({ workers_dev: true, preview_urls: false }),
+          ),
+          fetch: fetcher,
+        }),
+      ).resolves.toMatchObject({ ok: false, reason: 'readiness-failed' });
+      expect(fetcher).not.toHaveBeenCalled();
+    });
+
     it.each(['https://app.example.com', 'https://App.Example.com/'])(
       'sends Access headers to a staged custom route whose origin is opted in (%s)',
       async (origin) => {
@@ -3425,27 +3462,33 @@ describe('Cloudflare version activation', () => {
       );
     });
 
-    it('sends Access headers to a first-deployment custom domain whose origin is opted in', async () => {
-      const fetcher = vi.fn(async () => Response.json({ ready: true }));
+    it.each([false, true])(
+      'sends Access headers to a custom domain whose origin is opted in after bootstrap publication (atomic=%s)',
+      async (atomic) => {
+        const fetcher = vi.fn(async () => Response.json({ ready: true }));
 
-      await expect(
-        activateCloudflareVersion({
-          runWrangler: firstDeployRunner(),
-          verifyUploader: () => true,
-          workerName: 'bootstrap-private',
-          readinessHeaders: accessHeaders,
-          readinessHeadersOrigin: 'https://bootstrap.example.com',
-          message: encodeCloudflareVersionMessage(
-            [],
-            customDomainTriggers('bootstrap.example.com'),
-          ),
-          fetch: fetcher,
-        }),
-      ).resolves.toMatchObject({ ok: true, previewUrl: 'https://bootstrap.example.com' });
-      const [url, init] = probeCalls(fetcher)[0]!;
-      expect(url).toBe('https://bootstrap.example.com/__void/ready');
-      expect(init.headers).toMatchObject(accessHeaders);
-    });
+        await expect(
+          activateCloudflareVersion({
+            runWrangler: atomic
+              ? runner({ bootstrap: ok(`Current Version ID: ${NEXT}`) })
+              : firstDeployRunner(),
+            verifyUploader: () => true,
+            workerName: 'bootstrap-private',
+            atomic,
+            readinessHeaders: accessHeaders,
+            readinessHeadersOrigin: 'https://bootstrap.example.com',
+            message: encodeCloudflareVersionMessage(
+              [],
+              customDomainTriggers('bootstrap.example.com'),
+            ),
+            fetch: fetcher,
+          }),
+        ).resolves.toMatchObject({ ok: true, previewUrl: 'https://bootstrap.example.com' });
+        const [url, init] = probeCalls(fetcher)[0]!;
+        expect(url).toBe('https://bootstrap.example.com/__void/ready');
+        expect(init.headers).toMatchObject(accessHeaders);
+      },
+    );
 
     it.each([
       ['bootstrap', false, undefined],

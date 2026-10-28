@@ -2561,8 +2561,9 @@ function guardedReadinessHeaders(
 }
 
 /**
- * Normalize an operator-selected readiness origin. Returns `undefined` unless the value is an
- * `https:` origin without credentials, a path, a query, or a fragment.
+ * Normalize an operator-selected readiness origin. Returns `undefined` unless the value is one
+ * exact `https:` origin without a wildcard, credentials, a path, a query, or a fragment. A probe
+ * URL never has a wildcard host, so a wildcard value could never match.
  */
 export function normalizeReadinessAccessOrigin(value: string | undefined): string | undefined {
   if (!value) {
@@ -2571,6 +2572,7 @@ export function normalizeReadinessAccessOrigin(value: string | undefined): strin
   try {
     const url = new URL(value);
     return url.protocol === 'https:' &&
+      !url.hostname.includes('*') &&
       !url.username &&
       !url.password &&
       url.pathname === '/' &&

@@ -320,7 +320,11 @@ describe('Cloudflare activation diagnostics', () => {
     });
     expect(message).toContain('did not send Access credentials to https://dashboard.example.com');
     expect(message).toContain('CF_ACCESS_READINESS_ORIGIN=https://dashboard.example.com');
-    expect(message).toContain('void deploy --platform cloudflare --atomic');
+    expect(message).toContain('only if you control this hostname and it serves this Worker');
+    expect(message).toContain(
+      'For a Worker with Durable Object migration history, `void deploy --platform cloudflare --atomic`',
+    );
+    expect(message).toContain('still exits with an error');
     expect(message).toContain('traffic was restored to the previous version');
   });
 
@@ -332,7 +336,8 @@ describe('Cloudflare activation diagnostics', () => {
     });
     expect(message).toContain('did not send Access credentials to https://dashboard.example.com');
     expect(message).toContain('CF_ACCESS_READINESS_ORIGIN=https://dashboard.example.com');
-    expect(message).toContain('--atomic');
+    expect(message).toContain('only if you control this hostname and it serves this Worker');
+    expect(message).toContain('For a Worker with Durable Object migration history');
     expect(message).toContain('already active');
   });
 
@@ -344,6 +349,8 @@ describe('Cloudflare activation diagnostics', () => {
     });
     expect(message).toContain('the atomic Worker deployment is live');
     expect(message).toContain('CF_ACCESS_READINESS_ORIGIN=https://dashboard.example.com');
+    expect(message).toContain('only if you control this hostname and it serves this Worker');
+    expect(message).not.toContain('--atomic');
   });
 
   it('keeps the workers.dev Access guidance without a custom-route origin', () => {
@@ -2593,6 +2600,49 @@ describe('runCloudflareDeploy — static, SPA, and SSG apps', () => {
       output.mockRestore();
     }
   });
+
+  it.each([
+    ['static', undefined, undefined],
+    ['worker', undefined, undefined],
+    ['static', 'https://dashboard.example.com', 'https://dashboard.example.com'],
+    ['worker', 'https://dashboard.example.com', 'https://dashboard.example.com'],
+  ] as const)(
+    'ignores a readiness Access origin that void.config.ts assigns (%s app, operator value %s)',
+    async (kind, operatorOrigin, expectedOrigin) => {
+      const root = makeProject({
+        'package.json': JSON.stringify({ name: 'site', dependencies: { void: '*' } }),
+        'void.config.ts': [
+          `process.env.CF_ACCESS_READINESS_ORIGIN = 'https://collector.example.com';`,
+          `export default { cloudflare: { name: 'site', account_id: 'personal', compatibility_date: '2026-02-24' } };`,
+        ].join('\n'),
+        'routes/index.ts': 'export const GET = () => "site";',
+        'public/index.html': '<h1>Site</h1>',
+      });
+      vi.stubEnv('CF_ACCESS_READINESS_ORIGIN', operatorOrigin);
+      let readinessHeadersOrigin: string | undefined = 'not called';
+      const { deps, exitCalls } = harness({
+        activateVersion: async (options) => {
+          readinessHeadersOrigin = options.readinessHeadersOrigin;
+          return {
+            ok: true,
+            versionId: '22222222-2222-4222-8222-222222222222',
+            previewUrl: 'https://site.example.workers.dev',
+            previousVersionId: null,
+          };
+        },
+      });
+
+      await runCloudflareDeploy(
+        root,
+        kind === 'static' ? { dir: 'public' } : {},
+        silentCliLog,
+        deps,
+      );
+      expect(exitCalls).toEqual([]);
+      expect(process.env.CF_ACCESS_READINESS_ORIGIN).toBe('https://collector.example.com');
+      expect(readinessHeadersOrigin).toBe(expectedOrigin);
+    },
+  );
 
   it('builds and deploys an unconfigured Vite SPA', async () => {
     const root = makeProject({

@@ -35,11 +35,25 @@ export function resolveCloudflareWorkersDevSubdomain(
 }
 
 /**
- * Resolve the operator-selected origin that may receive readiness Access credentials when the
- * probe uses a custom route. Only the deploy environment can set it, never project files.
+ * Record `CF_ACCESS_READINESS_ORIGIN` before project code runs. `void.config.ts` is evaluated in
+ * this process, so a later read of `process.env` could see a value that the project assigned,
+ * for example through a dotenv import. `null` means unset. An already recorded value is kept.
+ */
+export function withRecordedReadinessAccessOrigin<
+  T extends { readinessAccessOrigin?: string | null },
+>(options: T, env: Readonly<Record<string, string | undefined>> = process.env): T {
+  return options.readinessAccessOrigin !== undefined
+    ? options
+    : { ...options, readinessAccessOrigin: env.CF_ACCESS_READINESS_ORIGIN ?? null };
+}
+
+/**
+ * Validate the operator-selected origin that may receive readiness Access credentials when the
+ * probe uses a route or Custom Domain. Pass the value that `withRecordedReadinessAccessOrigin`
+ * recorded, not the current `process.env`.
  */
 export function resolveCloudflareReadinessAccessOrigin(
-  env: Readonly<Record<string, string | undefined>> = process.env,
+  env: Readonly<Record<string, string | undefined>>,
 ): string | undefined {
   const configured = env.CF_ACCESS_READINESS_ORIGIN?.trim();
   if (!configured) {
@@ -48,7 +62,7 @@ export function resolveCloudflareReadinessAccessOrigin(
   const origin = normalizeReadinessAccessOrigin(configured);
   if (!origin) {
     throw new Error(
-      'deploy: CF_ACCESS_READINESS_ORIGIN must be an https origin without a path, query, or credentials, for example "https://app.example.com".',
+      'deploy: CF_ACCESS_READINESS_ORIGIN must be one exact https origin, without a wildcard, path, query, fragment, or credentials, for example "https://app.example.com".',
     );
   }
   return origin;

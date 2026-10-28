@@ -99,6 +99,7 @@ describe('Cloudflare readiness Access origin', () => {
     'https://dashboard.example.com/?token=1',
     'https://dashboard.example.com/#ready',
     'https://user:pass@dashboard.example.com',
+    'https://*.internal.example.com',
     'dashboard.example.com',
   ])('rejects %s', (value) => {
     expect(() =>
