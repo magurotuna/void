@@ -6,6 +6,7 @@ import {
   rememberCloudflareWorkersDevSubdomain,
   resolveCloudflareReadinessAccessOrigin,
   resolveCloudflareWorkersDevSubdomain,
+  withRecordedReadinessAccessOrigin,
 } from '../../src/cli/cloudflare-readiness.ts';
 
 const roots: Array<string> = [];
@@ -115,5 +116,25 @@ describe('Cloudflare readiness Access origin', () => {
     expect(
       resolveCloudflareReadinessAccessOrigin({ CF_ACCESS_READINESS_ORIGIN: '  ' }),
     ).toBeUndefined();
+  });
+
+  it('records the operator value once and keeps it after the environment changes', () => {
+    const later = { CF_ACCESS_READINESS_ORIGIN: 'https://collector.example.com' };
+    expect(withRecordedReadinessAccessOrigin({}, {})).toEqual({ readinessAccessOrigin: null });
+    expect(
+      withRecordedReadinessAccessOrigin(
+        {},
+        { CF_ACCESS_READINESS_ORIGIN: 'https://app.example.com' },
+      ),
+    ).toEqual({ readinessAccessOrigin: 'https://app.example.com' });
+    expect(withRecordedReadinessAccessOrigin({ readinessAccessOrigin: null }, later)).toEqual({
+      readinessAccessOrigin: null,
+    });
+    expect(
+      withRecordedReadinessAccessOrigin(
+        { readinessAccessOrigin: 'https://app.example.com' },
+        later,
+      ),
+    ).toEqual({ readinessAccessOrigin: 'https://app.example.com' });
   });
 });
