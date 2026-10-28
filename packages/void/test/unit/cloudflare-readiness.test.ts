@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vite-plus/test';
 import {
   rememberCloudflareWorkersDevSubdomain,
+  resolveCloudflareReadinessAccessOrigin,
   resolveCloudflareWorkersDevSubdomain,
 } from '../../src/cli/cloudflare-readiness.ts';
 
@@ -80,5 +81,38 @@ describe('Cloudflare readiness state', () => {
       false,
     );
     expect(resolveCloudflareWorkersDevSubdomain(root, 'account-a', {})).toBeUndefined();
+  });
+});
+
+describe('Cloudflare readiness Access origin', () => {
+  it('normalizes the opted-in origin', () => {
+    expect(
+      resolveCloudflareReadinessAccessOrigin({
+        CF_ACCESS_READINESS_ORIGIN: ' https://Dashboard.Internal.Example.com/ ',
+      }),
+    ).toBe('https://dashboard.internal.example.com');
+  });
+
+  it.each([
+    'http://dashboard.example.com',
+    'https://dashboard.example.com/__void/ready',
+    'https://dashboard.example.com/?token=1',
+    'https://dashboard.example.com/#ready',
+    'https://user:pass@dashboard.example.com',
+    'dashboard.example.com',
+  ])('rejects %s', (value) => {
+    expect(() =>
+      resolveCloudflareReadinessAccessOrigin({ CF_ACCESS_READINESS_ORIGIN: value }),
+    ).toThrow('CF_ACCESS_READINESS_ORIGIN');
+  });
+
+  it('treats an unset or empty GitHub Actions variable as absent', () => {
+    expect(resolveCloudflareReadinessAccessOrigin({})).toBeUndefined();
+    expect(
+      resolveCloudflareReadinessAccessOrigin({ CF_ACCESS_READINESS_ORIGIN: '' }),
+    ).toBeUndefined();
+    expect(
+      resolveCloudflareReadinessAccessOrigin({ CF_ACCESS_READINESS_ORIGIN: '  ' }),
+    ).toBeUndefined();
   });
 });

@@ -308,6 +308,52 @@ describe('Cloudflare activation diagnostics', () => {
     });
     expect(message).toContain('error 1050');
     expect(message).toContain('create an Access application');
+    expect(message).not.toContain('CF_ACCESS_READINESS_ORIGIN');
+  });
+
+  it('names the readiness origin opt-in when Access blocks an uncredentialed custom route', () => {
+    const message = formatCloudflareActivationError({
+      ok: false,
+      reason: 'readiness-access-denied',
+      rollback: 'succeeded',
+      customRouteReadinessOrigin: 'https://dashboard.example.com',
+    });
+    expect(message).toContain('did not send Access credentials to https://dashboard.example.com');
+    expect(message).toContain('CF_ACCESS_READINESS_ORIGIN=https://dashboard.example.com');
+    expect(message).toContain('void deploy --platform cloudflare --atomic');
+    expect(message).toContain('traffic was restored to the previous version');
+  });
+
+  it('names the readiness origin opt-in when first-deploy readiness is blocked on a custom domain', () => {
+    const message = formatCloudflareActivationError({
+      ok: false,
+      reason: 'bootstrap-readiness-access-denied',
+      customRouteReadinessOrigin: 'https://dashboard.example.com',
+    });
+    expect(message).toContain('did not send Access credentials to https://dashboard.example.com');
+    expect(message).toContain('CF_ACCESS_READINESS_ORIGIN=https://dashboard.example.com');
+    expect(message).toContain('--atomic');
+    expect(message).toContain('already active');
+  });
+
+  it('names the readiness origin opt-in when an atomic custom-domain probe is blocked', () => {
+    const message = formatCloudflareActivationError({
+      ok: false,
+      reason: 'atomic-readiness-access-denied',
+      customRouteReadinessOrigin: 'https://dashboard.example.com',
+    });
+    expect(message).toContain('the atomic Worker deployment is live');
+    expect(message).toContain('CF_ACCESS_READINESS_ORIGIN=https://dashboard.example.com');
+  });
+
+  it('keeps the workers.dev Access guidance without a custom-route origin', () => {
+    const message = formatCloudflareActivationError({
+      ok: false,
+      reason: 'readiness-access-denied',
+      rollback: 'succeeded',
+    });
+    expect(message).toContain('CF_ACCESS_CLIENT_ID and CF_ACCESS_CLIENT_SECRET');
+    expect(message).not.toContain('CF_ACCESS_READINESS_ORIGIN');
   });
 
   it.each(['bootstrap-readiness-failed', 'atomic-readiness-failed'] as const)(
@@ -2495,6 +2541,57 @@ describe('runCloudflareDeploy — static, SPA, and SSG apps', () => {
     expect(exitCalls).toEqual([]);
     expect(readinessHeaders).toEqual({ 'cf-access-token': 'short-lived-user-jwt' });
     expect(readinessHeadersWorkersDevSubdomain).toBe('developer-platform-experience');
+  });
+
+  it('passes the operator-selected readiness Access origin to activation', async () => {
+    const root = makeProject({
+      'package.json': JSON.stringify({ name: 'access-route-app' }),
+      'void.json': JSON.stringify({ inference: { appType: 'spa' } }),
+      'wrangler.jsonc': JSON.stringify({ account_id: 'acc123' }),
+      'dist/index.html': '<h1>Access</h1>',
+    });
+    vi.stubEnv('CF_ACCESS_READINESS_ORIGIN', 'https://Dashboard.Example.com/');
+    let readinessHeadersOrigin: string | undefined;
+    const { deps, exitCalls } = harness({
+      activateVersion: async (options) => {
+        readinessHeadersOrigin = options.readinessHeadersOrigin;
+        return {
+          ok: true,
+          versionId: '22222222-2222-4222-8222-222222222222',
+          previewUrl: 'https://dashboard.example.com',
+          previousVersionId: null,
+        };
+      },
+    });
+
+    await runCloudflareDeploy(root, { platform: 'cloudflare' }, silentCliLog, deps);
+    expect(exitCalls).toEqual([]);
+    expect(readinessHeadersOrigin).toBe('https://dashboard.example.com');
+  });
+
+  it('rejects an invalid readiness Access origin before building', async () => {
+    const root = makeProject({
+      'package.json': JSON.stringify({ name: 'access-route-app' }),
+      'void.json': JSON.stringify({ inference: { appType: 'spa' } }),
+      'wrangler.jsonc': JSON.stringify({ account_id: 'acc123' }),
+      'dist/index.html': '<h1>Access</h1>',
+    });
+    vi.stubEnv('CF_ACCESS_READINESS_ORIGIN', 'http://dashboard.example.com');
+    const output = vi.spyOn(log, 'error').mockImplementation(() => {});
+    const activateVersion = vi.fn();
+    const { deps, trace, exitCalls } = harness({ activateVersion });
+
+    try {
+      await expect(
+        runCloudflareDeploy(root, { platform: 'cloudflare' }, silentCliLog, deps),
+      ).rejects.toBeInstanceOf(ExitError);
+      expect(exitCalls).toEqual([1]);
+      expect(output).toHaveBeenCalledWith(expect.stringContaining('CF_ACCESS_READINESS_ORIGIN'));
+      expect(trace).not.toContain('build');
+      expect(activateVersion).not.toHaveBeenCalled();
+    } finally {
+      output.mockRestore();
+    }
   });
 
   it('builds and deploys an unconfigured Vite SPA', async () => {

@@ -1,5 +1,9 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { extractWorkersDevSubdomain, normalizeWorkersDevSubdomain } from '@void/deploy-cloudflare';
+import {
+  extractWorkersDevSubdomain,
+  normalizeReadinessAccessOrigin,
+  normalizeWorkersDevSubdomain,
+} from '@void/deploy-cloudflare';
 import { dirname, join } from 'pathslash';
 
 const STATE_FILE = join('.void', 'cloudflare.json');
@@ -28,6 +32,26 @@ export function resolveCloudflareWorkersDevSubdomain(
 
   const cached = subdomainsByAccount(readCloudflareLocalState(root))[accountId];
   return typeof cached === 'string' ? normalizeWorkersDevSubdomain(cached) : undefined;
+}
+
+/**
+ * Resolve the operator-selected origin that may receive readiness Access credentials when the
+ * probe uses a custom route. Only the deploy environment can set it, never project files.
+ */
+export function resolveCloudflareReadinessAccessOrigin(
+  env: Readonly<Record<string, string | undefined>> = process.env,
+): string | undefined {
+  const configured = env.CF_ACCESS_READINESS_ORIGIN?.trim();
+  if (!configured) {
+    return undefined;
+  }
+  const origin = normalizeReadinessAccessOrigin(configured);
+  if (!origin) {
+    throw new Error(
+      'deploy: CF_ACCESS_READINESS_ORIGIN must be an https origin without a path, query, or credentials, for example "https://app.example.com".',
+    );
+  }
+  return origin;
 }
 
 /** Cache a Wrangler-reported account subdomain for later no-preview version probes. */
