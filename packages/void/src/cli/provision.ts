@@ -314,6 +314,21 @@ export function resolvePinnedApiBaseUrl(
   return `https://api${fed}${staging}.cloudflare.com/client/v4`;
 }
 
+/**
+ * The effective compliance region, resolved with the same rules as
+ * {@link resolvePinnedApiBaseUrl}. Invalid or conflicting values throw.
+ */
+export function resolvePinnedComplianceRegion(
+  env: NodeJS.ProcessEnv = process.env,
+  configComplianceRegion?: string,
+): ComplianceRegion {
+  const configRegion =
+    configComplianceRegion !== undefined
+      ? assertComplianceChoice(configComplianceRegion, 'the Cloudflare config "compliance_region"')
+      : undefined;
+  return resolveComplianceRegion(env, configRegion);
+}
+
 /** `WRANGLER_API_ENVIRONMENT` like wrangler: absent means production; other values fail. */
 function resolveApiEnvironment(env: NodeJS.ProcessEnv): 'production' | 'staging' {
   const raw = env.WRANGLER_API_ENVIRONMENT;
@@ -332,7 +347,7 @@ function resolveApiEnvironment(env: NodeJS.ProcessEnv): 'production' | 'staging'
 
 /** Compliance-region values wrangler accepts. */
 const COMPLIANCE_REGIONS = ['public', 'fedramp_high'] as const;
-type ComplianceRegion = (typeof COMPLIANCE_REGIONS)[number];
+export type ComplianceRegion = (typeof COMPLIANCE_REGIONS)[number];
 
 function assertComplianceChoice(value: string, source: string): ComplianceRegion {
   if (value !== 'public' && value !== 'fedramp_high') {

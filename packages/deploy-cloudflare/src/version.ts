@@ -65,6 +65,14 @@ export type CloudflareTrafficConfig = Pick<
   'workers_dev' | 'preview_urls' | 'routes'
 >;
 
+/**
+ * Result of an account workers.dev subdomain lookup. `uploader-changed` means the lookup refused
+ * to run a changed uploader with the session credentials.
+ */
+export type CloudflareWorkersDevSubdomainLookup =
+  | { ok: true; subdomain: string }
+  | { ok: false; reason: 'unavailable' | 'uploader-changed' };
+
 export type CloudflareVersionActivation =
   | {
       ok: true;
@@ -797,9 +805,10 @@ export type CloudflareVersionActivationOptions = {
   workersDevSubdomain?: string;
   /**
    * Look up the account workers.dev subdomain when a first publish reports no URL and
-   * `workersDevSubdomain` is not set. A failed lookup resolves to undefined or throws.
+   * `workersDevSubdomain` is not set. The subdomain includes the compliance-region label, for
+   * example `team.fed` for FedRAMP High. A thrown error counts as `unavailable`.
    */
-  resolveWorkersDevSubdomain?: () => Promise<string | undefined>;
+  resolveWorkersDevSubdomain?: () => Promise<CloudflareWorkersDevSubdomainLookup>;
   /**
    * Operator-provided workers.dev subdomain that may receive readiness credentials even when
    * Wrangler cannot report a preview URL. Cached/project-controlled values must not be used here.
@@ -2002,12 +2011,16 @@ async function bootstrapFirstDeployment(
     versionId &&
     !reportedOrConfiguredUrl &&
     desiredTriggerConfig.workers_dev &&
+    !desiredTriggerConfig.preserve &&
+    !desiredTriggerConfig.preserveWorkersDev &&
+    !options.preserveTriggers &&
     options.resolveWorkersDevSubdomain
   ) {
     // A publish over a Worker with workers.dev disabled, such as the draft that
-    // `secret put` creates, reports no URL. Trigger synchronization enables
-    // workers.dev below, so the readiness URL needs only the account subdomain.
-    // The lookup can run the uploader to read the session token.
+    // `secret put` creates, reports no URL. Trigger synchronization below
+    // publishes `workers_dev: true` when no trigger is preserved, so the
+    // readiness URL needs only the account subdomain. The lookup can run the
+    // uploader to read the session token.
     if (!options.verifyUploader()) {
       return {
         ok: false,
@@ -2017,13 +2030,24 @@ async function bootstrapFirstDeployment(
         rollback: 'unsafe',
       };
     }
-    let subdomain: string | undefined;
+    let lookup: CloudflareWorkersDevSubdomainLookup;
     try {
-      subdomain = await options.resolveWorkersDevSubdomain();
+      lookup = await options.resolveWorkersDevSubdomain();
     } catch {
-      subdomain = undefined;
+      lookup = { ok: false, reason: 'unavailable' };
     }
-    reportedOrConfiguredUrl = workersDevReadinessUrl(options.workerName, subdomain);
+    if (!lookup.ok && lookup.reason === 'uploader-changed') {
+      return {
+        ok: false,
+        reason: 'uploader-changed',
+        versionId,
+        previousVersionId,
+        rollback: 'unsafe',
+      };
+    }
+    reportedOrConfiguredUrl = lookup.ok
+      ? workersDevReadinessUrl(options.workerName, lookup.subdomain)
+      : undefined;
   }
   if (!versionId || !reportedOrConfiguredUrl) {
     return {

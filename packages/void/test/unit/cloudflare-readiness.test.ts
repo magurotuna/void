@@ -143,51 +143,57 @@ describe('Cloudflare readiness Access origin', () => {
 describe('Cloudflare account subdomain lookup', () => {
   const API = 'https://api.example.test/client/v4';
 
+  function lookup(
+    overrides: Partial<Parameters<typeof readCloudflareWorkersDevSubdomain>[0]> = {},
+  ): ReturnType<typeof readCloudflareWorkersDevSubdomain> {
+    return readCloudflareWorkersDevSubdomain({
+      accountId: 'account-a',
+      apiBaseUrl: API,
+      complianceRegion: 'public',
+      getToken: async () => 'synthetic-token',
+      verifyUploader: () => true,
+      fetcher: async () => Response.json({ success: true, result: { subdomain: 'team' } }),
+      ...overrides,
+    });
+  }
+
   it('reads and normalizes the subdomain with the session bearer', async () => {
     const fetcher = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
       expect(String(url)).toBe(`${API}/accounts/account-a/workers/subdomain`);
       expect(new Headers(init?.headers).get('authorization')).toBe('Bearer synthetic-token');
       return Response.json({ success: true, result: { subdomain: 'My-Team' } });
     });
-    await expect(
-      readCloudflareWorkersDevSubdomain({
-        accountId: 'account-a',
-        apiBaseUrl: `${API}/`,
-        getToken: async () => 'synthetic-token',
-        verifyUploader: () => true,
-        fetcher,
-      }),
-    ).resolves.toBe('my-team');
+    await expect(lookup({ apiBaseUrl: `${API}/`, fetcher })).resolves.toEqual({
+      ok: true,
+      subdomain: 'my-team',
+    });
     expect(fetcher).toHaveBeenCalledOnce();
   });
 
-  it('does not read a token after the uploader changes', async () => {
+  it('adds the FedRAMP High suffix to the account subdomain, as Wrangler does', async () => {
+    await expect(lookup({ complianceRegion: 'fedramp_high' })).resolves.toEqual({
+      ok: true,
+      subdomain: 'team.fed',
+    });
+  });
+
+  it('reports an uploader change without reading a token', async () => {
     const getToken = vi.fn(async () => 'synthetic-token');
     const fetcher = vi.fn<typeof fetch>();
-    await expect(
-      readCloudflareWorkersDevSubdomain({
-        accountId: 'account-a',
-        apiBaseUrl: API,
-        getToken,
-        verifyUploader: () => false,
-        fetcher,
-      }),
-    ).resolves.toBeUndefined();
+    await expect(lookup({ getToken, verifyUploader: () => false, fetcher })).resolves.toEqual({
+      ok: false,
+      reason: 'uploader-changed',
+    });
     expect(getToken).not.toHaveBeenCalled();
     expect(fetcher).not.toHaveBeenCalled();
   });
 
   it('does not call Cloudflare without a session bearer', async () => {
     const fetcher = vi.fn<typeof fetch>();
-    await expect(
-      readCloudflareWorkersDevSubdomain({
-        accountId: 'account-a',
-        apiBaseUrl: API,
-        getToken: async () => null,
-        verifyUploader: () => true,
-        fetcher,
-      }),
-    ).resolves.toBeUndefined();
+    await expect(lookup({ getToken: async () => null, fetcher })).resolves.toEqual({
+      ok: false,
+      reason: 'unavailable',
+    });
     expect(fetcher).not.toHaveBeenCalled();
   });
 
@@ -211,15 +217,10 @@ describe('Cloudflare account subdomain lookup', () => {
         throw new TypeError('fetch failed');
       },
     },
-  ])('resolves undefined for a $label response', async ({ respond }) => {
-    await expect(
-      readCloudflareWorkersDevSubdomain({
-        accountId: 'account-a',
-        apiBaseUrl: API,
-        getToken: async () => 'synthetic-token',
-        verifyUploader: () => true,
-        fetcher: async () => respond(),
-      }),
-    ).resolves.toBeUndefined();
+  ])('reports the lookup as unavailable for a $label response', async ({ respond }) => {
+    await expect(lookup({ fetcher: async () => respond() })).resolves.toEqual({
+      ok: false,
+      reason: 'unavailable',
+    });
   });
 });

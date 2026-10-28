@@ -39,7 +39,10 @@ import {
   ensureCloudflareAuthSecret,
   runWranglerAuthToken,
 } from '../../src/cli/deploy-cloudflare-auth.ts';
-import { formatCloudflareActivationError } from '../../src/cli/deploy-cloudflare-helpers.ts';
+import {
+  cloudflareCandidateActivationOptions,
+  formatCloudflareActivationError,
+} from '../../src/cli/deploy-cloudflare-helpers.ts';
 import { prepareCloudflareFrameworkArtifact } from '../../src/cli/deploy-cloudflare-static.ts';
 import { runCloudflareDeploy } from '../../src/cli/deploy-cloudflare.ts';
 import {
@@ -256,10 +259,77 @@ describe('Cloudflare activation diagnostics', () => {
       expect(withVersion).toContain(versionId);
       expect(withVersion).toContain('could not determine its URL');
       expect(withVersion).toContain('CLOUDFLARE_WORKERS_SUBDOMAIN');
+      expect(withVersion).toContain('"my-team.fed" for FedRAMP High');
       expect(withVersion).not.toContain('did not report');
+      // The non-atomic retry stages the next version on workers.dev, which
+      // trigger synchronization never turned on.
+      if (reason === 'bootstrap-output-invalid') {
+        expect(withVersion).toContain('turn on workers.dev for this Worker');
+      } else {
+        expect(withVersion).not.toContain('turn on workers.dev');
+      }
       expect(formatCloudflareActivationError({ ok: false, reason })).toContain(
         'did not report its version id',
       );
+    },
+  );
+
+  it.each([
+    { region: undefined, subdomain: 'team' },
+    { region: 'fedramp_high', subdomain: 'team.fed' },
+  ])(
+    'wires the workers.dev lookup to the pinned session and region ($subdomain)',
+    async ({ region, subdomain }) => {
+      vi.stubEnv('CLOUDFLARE_COMPLIANCE_REGION', undefined);
+      const root = makeProject({
+        'wrangler.jsonc': JSON.stringify({
+          name: 'site',
+          account_id: 'account-a',
+          compatibility_date: '2026-02-24',
+          ...(region ? { compliance_region: region } : {}),
+        }),
+      });
+      const configPath = join(root, 'wrangler.jsonc');
+      const operations: Array<CloudflareOperation> = [];
+      const runWrangler: DeployWranglerRun = (operation) => {
+        operations.push(operation);
+        return { ...cleanExit, data: { type: 'api_token', token: 'synthetic-token' } };
+      };
+      const fetcher = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+        expect(String(url)).toBe(
+          'https://api.example.test/client/v4/accounts/account-a/workers/subdomain',
+        );
+        expect(new Headers(init?.headers).get('authorization')).toBe('Bearer synthetic-token');
+        return Response.json({ success: true, result: { subdomain: 'team' } });
+      });
+      vi.stubGlobal('fetch', fetcher);
+      try {
+        const options = cloudflareCandidateActivationOptions({
+          root,
+          rootConfigPath: configPath,
+          uploadConfigPath: configPath,
+          accountId: 'account-a',
+          apiBaseUrl: 'https://api.example.test/client/v4',
+          workerName: 'site',
+          workersDevSubdomain: undefined,
+          runWrangler,
+          readExistingWorker: undefined,
+          existingWorker: null,
+          pinnedHandoffLink: null,
+          initialCloudflareCandidate: null,
+          assertUploaderStillPinned: () => true,
+          approvedKv: [],
+          queueConsumerCleanup: [],
+        });
+        await expect(options.resolveWorkersDevSubdomain?.()).resolves.toEqual({
+          ok: true,
+          subdomain,
+        });
+        expect(operations).toEqual([{ type: 'auth.token', configPath }]);
+        expect(fetcher).toHaveBeenCalledOnce();
+      } finally {
+        vi.unstubAllGlobals();
+      }
     },
   );
 

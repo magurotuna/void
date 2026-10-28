@@ -59,6 +59,7 @@ import { deployChildEnv, resolveDeployTransport } from './deploy-transport.ts';
 import type { CloudflareDeployDeps, DeployWranglerRun } from './deploy-types.ts';
 import { type CliLogger } from './log-file.ts';
 import { createSpinner, getErrorMessage } from './output.ts';
+import { resolvePinnedComplianceRegion, type ComplianceRegion } from './provision.ts';
 import {
   acknowledgeWranglerManagedQueueRemovals,
   readWranglerPublishedTrafficSnapshot,
@@ -381,13 +382,28 @@ export function cloudflareCandidateActivationOptions(options: {
         },
     readinessHeaders: cloudflareWorkerReadinessHeaders(),
     workersDevSubdomain,
-    resolveWorkersDevSubdomain: () =>
-      readCloudflareWorkersDevSubdomain({
+    resolveWorkersDevSubdomain: async () => {
+      let complianceRegion: ComplianceRegion;
+      try {
+        // The same rules that pinned the deploy's API base.
+        complianceRegion = resolvePinnedComplianceRegion(
+          process.env,
+          readWranglerTopLevelString(
+            parseRootWranglerConfig(options.rootConfigPath),
+            'compliance_region',
+          ),
+        );
+      } catch {
+        return { ok: false, reason: 'unavailable' };
+      }
+      return readCloudflareWorkersDevSubdomain({
         accountId,
         apiBaseUrl: options.apiBaseUrl,
+        complianceRegion,
         getToken: () => runWranglerAuthToken(runWrangler, configPath),
         verifyUploader: options.assertUploaderStillPinned,
-      }),
+      });
+    },
     readinessHeadersWorkersDevSubdomain: process.env.CLOUDFLARE_WORKERS_SUBDOMAIN?.trim()
       ? workersDevSubdomain
       : undefined,
@@ -579,8 +595,11 @@ function formatCloudflareActivationFailure(
       return `deploy: Cloudflare could not publish the Worker atomically${status}; inspect production status before retrying.${cloudflareCode}${diagnostic}`;
     case 'atomic-output-invalid':
       if (result.versionId) {
+        // An atomic retry publishes through the same bootstrap, which then
+        // enables workers.dev during trigger synchronization.
         return formatCloudflarePublishWithoutUrl(
           `Cloudflare published Worker version ${result.versionId} atomically`,
+          `If the app uses workers.dev, set CLOUDFLARE_WORKERS_SUBDOMAIN to your account subdomain ${WORKERS_SUBDOMAIN_EXAMPLE}.`,
         );
       }
       return 'deploy: Cloudflare published atomically but did not report its version id. Inspect `void project status` immediately.';
@@ -616,8 +635,11 @@ function formatCloudflareActivationFailure(
       return `deploy: Cloudflare could not bootstrap the first Worker deployment${status}.${cloudflareCode}${diagnostic}`;
     case 'bootstrap-output-invalid':
       if (result.versionId) {
+        // A non-atomic retry stages the next version behind the workers.dev
+        // URL, which stays off until a trigger synchronization succeeds.
         return formatCloudflarePublishWithoutUrl(
           `Cloudflare published the first Worker deployment as version ${result.versionId}`,
+          `If the app uses workers.dev, turn on workers.dev for this Worker in the Cloudflare dashboard, and set CLOUDFLARE_WORKERS_SUBDOMAIN to your account subdomain ${WORKERS_SUBDOMAIN_EXAMPLE}.`,
         );
       }
       return [
@@ -695,12 +717,14 @@ function formatCloudflareReadinessRestoration(
   }
 }
 
+const WORKERS_SUBDOMAIN_EXAMPLE = '(for example "my-team", or "my-team.fed" for FedRAMP High)';
+
 /** Explain a live version whose readiness URL Void could not determine. */
-function formatCloudflarePublishWithoutUrl(published: string): string {
+function formatCloudflarePublishWithoutUrl(published: string, recovery: string): string {
   return [
     `deploy: ${published}, but Void could not determine its URL.`,
     'Void did not update its routes, workers.dev setting, or other triggers, and did not check /__void/ready.',
-    'If the app uses workers.dev, set CLOUDFLARE_WORKERS_SUBDOMAIN to your account subdomain (for example "my-team").',
+    recovery,
     'Then inspect `void project status` before you deploy again.',
   ].join('\n');
 }

@@ -3,9 +3,11 @@ import {
   extractWorkersDevSubdomain,
   normalizeReadinessAccessOrigin,
   normalizeWorkersDevSubdomain,
+  type CloudflareWorkersDevSubdomainLookup,
 } from '@void/deploy-cloudflare';
 import { dirname, join } from 'pathslash';
 import { PlatformCloudflareClient } from './platform-cloudflare.ts';
+import type { ComplianceRegion } from './provision.ts';
 
 const STATE_FILE = join('.void', 'cloudflare.json');
 
@@ -71,32 +73,39 @@ export function resolveCloudflareReadinessAccessOrigin(
 
 /**
  * Read the account subdomain from the Cloudflare API when a first publish reports no URL and
- * no subdomain is configured or cached. Every failure resolves `undefined`.
+ * no subdomain is configured or cached. The API returns only the account label, so this adds
+ * `.fed` for FedRAMP High, as Wrangler does. A failed lookup resolves `unavailable`.
  */
 export async function readCloudflareWorkersDevSubdomain(options: {
   accountId: string;
   apiBaseUrl: string;
+  complianceRegion: ComplianceRegion;
   getToken: () => Promise<string | null>;
   verifyUploader: () => boolean;
   fetcher?: typeof fetch;
-}): Promise<string | undefined> {
+}): Promise<CloudflareWorkersDevSubdomainLookup> {
   // The token read runs the pinned uploader.
   if (!options.verifyUploader()) {
-    return undefined;
+    return { ok: false, reason: 'uploader-changed' };
   }
   const token = await options.getToken();
   if (!token) {
-    return undefined;
+    return { ok: false, reason: 'unavailable' };
   }
+  let label: string;
   try {
     const client = new PlatformCloudflareClient(token, {
       apiBase: options.apiBaseUrl,
       fetcher: options.fetcher,
     });
-    return normalizeWorkersDevSubdomain(await client.getWorkersSubdomain(options.accountId));
+    label = await client.getWorkersSubdomain(options.accountId);
   } catch {
-    return undefined;
+    return { ok: false, reason: 'unavailable' };
   }
+  const subdomain = normalizeWorkersDevSubdomain(
+    options.complianceRegion === 'fedramp_high' ? `${label}.fed` : label,
+  );
+  return subdomain ? { ok: true, subdomain } : { ok: false, reason: 'unavailable' };
 }
 
 /** Cache a Wrangler-reported account subdomain for later no-preview version probes. */
