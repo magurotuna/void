@@ -1,8 +1,9 @@
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vite-plus/test';
+import { afterEach, describe, expect, it, vi } from 'vite-plus/test';
 import {
+  readCloudflareWorkersDevSubdomain,
   rememberCloudflareWorkersDevSubdomain,
   resolveCloudflareReadinessAccessOrigin,
   resolveCloudflareWorkersDevSubdomain,
@@ -136,5 +137,89 @@ describe('Cloudflare readiness Access origin', () => {
         later,
       ),
     ).toEqual({ readinessAccessOrigin: 'https://app.example.com' });
+  });
+});
+
+describe('Cloudflare account subdomain lookup', () => {
+  const API = 'https://api.example.test/client/v4';
+
+  it('reads and normalizes the subdomain with the session bearer', async () => {
+    const fetcher = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      expect(String(url)).toBe(`${API}/accounts/account-a/workers/subdomain`);
+      expect(new Headers(init?.headers).get('authorization')).toBe('Bearer synthetic-token');
+      return Response.json({ success: true, result: { subdomain: 'My-Team' } });
+    });
+    await expect(
+      readCloudflareWorkersDevSubdomain({
+        accountId: 'account-a',
+        apiBaseUrl: `${API}/`,
+        getToken: async () => 'synthetic-token',
+        verifyUploader: () => true,
+        fetcher,
+      }),
+    ).resolves.toBe('my-team');
+    expect(fetcher).toHaveBeenCalledOnce();
+  });
+
+  it('does not read a token after the uploader changes', async () => {
+    const getToken = vi.fn(async () => 'synthetic-token');
+    const fetcher = vi.fn<typeof fetch>();
+    await expect(
+      readCloudflareWorkersDevSubdomain({
+        accountId: 'account-a',
+        apiBaseUrl: API,
+        getToken,
+        verifyUploader: () => false,
+        fetcher,
+      }),
+    ).resolves.toBeUndefined();
+    expect(getToken).not.toHaveBeenCalled();
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it('does not call Cloudflare without a session bearer', async () => {
+    const fetcher = vi.fn<typeof fetch>();
+    await expect(
+      readCloudflareWorkersDevSubdomain({
+        accountId: 'account-a',
+        apiBaseUrl: API,
+        getToken: async () => null,
+        verifyUploader: () => true,
+        fetcher,
+      }),
+    ).resolves.toBeUndefined();
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    {
+      label: 'HTTP 403',
+      respond: () =>
+        Response.json(
+          { success: false, errors: [{ code: 10000, message: 'Authentication error' }] },
+          { status: 403 },
+        ),
+    },
+    { label: 'empty', respond: () => Response.json({ success: true, result: { subdomain: '' } }) },
+    {
+      label: 'invalid',
+      respond: () => Response.json({ success: true, result: { subdomain: 'not a subdomain' } }),
+    },
+    {
+      label: 'network',
+      respond: () => {
+        throw new TypeError('fetch failed');
+      },
+    },
+  ])('resolves undefined for a $label response', async ({ respond }) => {
+    await expect(
+      readCloudflareWorkersDevSubdomain({
+        accountId: 'account-a',
+        apiBaseUrl: API,
+        getToken: async () => 'synthetic-token',
+        verifyUploader: () => true,
+        fetcher: async () => respond(),
+      }),
+    ).resolves.toBeUndefined();
   });
 });

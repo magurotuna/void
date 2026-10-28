@@ -502,6 +502,101 @@ describe('Cloudflare version activation', () => {
     expect(fixture.fetcher).toHaveBeenCalledOnce();
   });
 
+  // A draft Worker from `void secret put` has workers.dev disabled, so its first
+  // publish reports a version id without a URL (issue #573).
+  function urlLessDraftPublish(fixture: ReturnType<typeof sdkDraftActivation>) {
+    return vi.fn(async (operation: CloudflareOperation): Promise<CloudflareCommandResult> => {
+      const result = await fixture.runWrangler(operation);
+      return operation.type === 'worker.deploy' ? { ...result, data: { versionId: NEXT } } : result;
+    });
+  }
+
+  it.each([true, false])(
+    'looks up the account subdomain when a draft publish reports no URL (atomic=%s)',
+    async (atomic) => {
+      const fixture = sdkDraftActivation();
+      const resolveWorkersDevSubdomain = vi.fn(async () => 'example');
+      const result = await activateCloudflareVersion({
+        ...fixture.options,
+        runWrangler: urlLessDraftPublish(fixture),
+        atomic,
+        resolveWorkersDevSubdomain,
+      });
+      expect(result.ok ? null : result.reason).toBeNull();
+      expect(result).toMatchObject({
+        ok: true,
+        versionId: NEXT,
+        previousVersionId: CURRENT,
+        previewUrl: 'https://app.example.workers.dev',
+        workersDevSubdomain: 'example',
+      });
+      expect(resolveWorkersDevSubdomain).toHaveBeenCalledOnce();
+      expect(fixture.events).toEqual(['source', 'pin', 'publish', 'triggers', 'ready']);
+      expect(fixture.fetcher).toHaveBeenCalledOnce();
+    },
+  );
+
+  it.each([
+    { atomic: true, outcome: 'missing' },
+    { atomic: false, outcome: 'missing' },
+    { atomic: true, outcome: 'thrown' },
+  ] as const)(
+    'stops before triggers when no workers.dev URL is known (atomic=$atomic, $outcome)',
+    async ({ atomic, outcome }) => {
+      const fixture = sdkDraftActivation();
+      const resolveWorkersDevSubdomain = vi.fn(async (): Promise<string | undefined> => {
+        if (outcome === 'thrown') {
+          throw new Error('synthetic lookup failure');
+        }
+        return undefined;
+      });
+      const result = await activateCloudflareVersion({
+        ...fixture.options,
+        runWrangler: urlLessDraftPublish(fixture),
+        atomic,
+        resolveWorkersDevSubdomain,
+      });
+      expect(result).toEqual({
+        ok: false,
+        reason: atomic ? 'atomic-output-invalid' : 'bootstrap-output-invalid',
+        versionId: NEXT,
+        previousVersionId: CURRENT,
+      });
+      expect(fixture.events).not.toContain('triggers');
+      expect(fixture.fetcher).not.toHaveBeenCalled();
+    },
+  );
+
+  it('does not look up the account subdomain after the uploader changes', async () => {
+    const fixture = sdkDraftActivation();
+    const resolveWorkersDevSubdomain = vi.fn(async () => 'example');
+    const result = await activateCloudflareVersion({
+      ...fixture.options,
+      runWrangler: urlLessDraftPublish(fixture),
+      atomic: true,
+      verifyUploader: () => !fixture.events.includes('publish'),
+      resolveWorkersDevSubdomain,
+    });
+    expect(result).toEqual({
+      ok: false,
+      reason: 'uploader-changed',
+      versionId: NEXT,
+      previousVersionId: CURRENT,
+      rollback: 'unsafe',
+    });
+    expect(resolveWorkersDevSubdomain).not.toHaveBeenCalled();
+    expect(fixture.events).not.toContain('triggers');
+  });
+
+  it('does not look up the account subdomain when the publish reports a URL', async () => {
+    const fixture = sdkDraftActivation();
+    const resolveWorkersDevSubdomain = vi.fn(async () => 'other');
+    expect(
+      await activateCloudflareVersion({ ...fixture.options, resolveWorkersDevSubdomain }),
+    ).toMatchObject({ ok: true, previewUrl: 'https://app.example.workers.dev' });
+    expect(resolveWorkersDevSubdomain).not.toHaveBeenCalled();
+  });
+
   it('does not overwrite a deployment that changed during immutable draft source inspection', async () => {
     const fixture = sdkDraftActivation();
     const entered = deferred<void>(),

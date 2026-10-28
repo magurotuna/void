@@ -5,6 +5,7 @@ import {
   normalizeWorkersDevSubdomain,
 } from '@void/deploy-cloudflare';
 import { dirname, join } from 'pathslash';
+import { PlatformCloudflareClient } from './platform-cloudflare.ts';
 
 const STATE_FILE = join('.void', 'cloudflare.json');
 
@@ -66,6 +67,36 @@ export function resolveCloudflareReadinessAccessOrigin(
     );
   }
   return origin;
+}
+
+/**
+ * Read the account subdomain from the Cloudflare API when a first publish reports no URL and
+ * no subdomain is configured or cached. Every failure resolves `undefined`.
+ */
+export async function readCloudflareWorkersDevSubdomain(options: {
+  accountId: string;
+  apiBaseUrl: string;
+  getToken: () => Promise<string | null>;
+  verifyUploader: () => boolean;
+  fetcher?: typeof fetch;
+}): Promise<string | undefined> {
+  // The token read runs the pinned uploader.
+  if (!options.verifyUploader()) {
+    return undefined;
+  }
+  const token = await options.getToken();
+  if (!token) {
+    return undefined;
+  }
+  try {
+    const client = new PlatformCloudflareClient(token, {
+      apiBase: options.apiBaseUrl,
+      fetcher: options.fetcher,
+    });
+    return normalizeWorkersDevSubdomain(await client.getWorkersSubdomain(options.accountId));
+  } catch {
+    return undefined;
+  }
 }
 
 /** Cache a Wrangler-reported account subdomain for later no-preview version probes. */

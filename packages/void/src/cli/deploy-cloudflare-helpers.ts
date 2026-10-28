@@ -39,6 +39,7 @@ import {
   createCloudflareEmptyDomainPublisher,
 } from './cloudflare-operations.ts';
 import {
+  readCloudflareWorkersDevSubdomain,
   rememberCloudflareWorkersDevSubdomain,
   resolveCloudflareReadinessAccessOrigin,
   resolveCloudflareWorkersDevSubdomain,
@@ -380,6 +381,13 @@ export function cloudflareCandidateActivationOptions(options: {
         },
     readinessHeaders: cloudflareWorkerReadinessHeaders(),
     workersDevSubdomain,
+    resolveWorkersDevSubdomain: () =>
+      readCloudflareWorkersDevSubdomain({
+        accountId,
+        apiBaseUrl: options.apiBaseUrl,
+        getToken: () => runWranglerAuthToken(runWrangler, configPath),
+        verifyUploader: options.assertUploaderStillPinned,
+      }),
     readinessHeadersWorkersDevSubdomain: process.env.CLOUDFLARE_WORKERS_SUBDOMAIN?.trim()
       ? workersDevSubdomain
       : undefined,
@@ -570,7 +578,12 @@ function formatCloudflareActivationFailure(
     case 'atomic-failed':
       return `deploy: Cloudflare could not publish the Worker atomically${status}; inspect production status before retrying.${cloudflareCode}${diagnostic}`;
     case 'atomic-output-invalid':
-      return 'deploy: Cloudflare published atomically but did not report a version id or URL. Inspect `void project status` immediately.';
+      if (result.versionId) {
+        return formatCloudflarePublishWithoutUrl(
+          `Cloudflare published Worker version ${result.versionId} atomically`,
+        );
+      }
+      return 'deploy: Cloudflare published atomically but did not report its version id. Inspect `void project status` immediately.';
     case 'atomic-readiness-failed':
     case 'atomic-readiness-access-denied': {
       const accessHint = result.customRouteReadinessOrigin
@@ -602,9 +615,14 @@ function formatCloudflareActivationFailure(
     case 'bootstrap-failed':
       return `deploy: Cloudflare could not bootstrap the first Worker deployment${status}.${cloudflareCode}${diagnostic}`;
     case 'bootstrap-output-invalid':
+      if (result.versionId) {
+        return formatCloudflarePublishWithoutUrl(
+          `Cloudflare published the first Worker deployment as version ${result.versionId}`,
+        );
+      }
       return [
         'deploy: Cloudflare bootstrapped the first Worker deployment, but Wrangler',
-        'did not report its version id and workers.dev URL. Inspect `void project status` before retrying.',
+        'did not report its version id. Inspect `void project status` before retrying.',
       ].join('\n');
     case 'bootstrap-readiness-failed':
       return (
@@ -675,6 +693,16 @@ function formatCloudflareReadinessRestoration(
     default:
       return 'The failed version remains inactive for inspection; production traffic is unchanged.';
   }
+}
+
+/** Explain a live version whose readiness URL Void could not determine. */
+function formatCloudflarePublishWithoutUrl(published: string): string {
+  return [
+    `deploy: ${published}, but Void could not determine its URL.`,
+    'Void did not update its routes, workers.dev setting, or other triggers, and did not check /__void/ready.',
+    'If the app uses workers.dev, set CLOUDFLARE_WORKERS_SUBDOMAIN to your account subdomain (for example "my-team").',
+    'Then inspect `void project status` before you deploy again.',
+  ].join('\n');
 }
 
 /** Capture the Access credential used only by the guarded Worker readiness probe. */

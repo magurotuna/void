@@ -248,6 +248,21 @@ describe('Cloudflare activation diagnostics', () => {
     },
   );
 
+  it.each(['atomic-output-invalid', 'bootstrap-output-invalid'] as const)(
+    'explains a live %s version whose URL is unknown',
+    (reason) => {
+      const versionId = '22222222-2222-4222-8222-222222222222';
+      const withVersion = formatCloudflareActivationError({ ok: false, reason, versionId });
+      expect(withVersion).toContain(versionId);
+      expect(withVersion).toContain('could not determine its URL');
+      expect(withVersion).toContain('CLOUDFLARE_WORKERS_SUBDOMAIN');
+      expect(withVersion).not.toContain('did not report');
+      expect(formatCloudflareActivationError({ ok: false, reason })).toContain(
+        'did not report its version id',
+      );
+    },
+  );
+
   it('suggests explicit atomic publication for a Durable Object staging conflict', () => {
     const message = formatCloudflareActivationError({
       ok: false,

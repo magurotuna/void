@@ -796,6 +796,11 @@ export type CloudflareVersionActivationOptions = {
   /** Account workers.dev subdomain used when this Worker cannot expose version preview URLs. */
   workersDevSubdomain?: string;
   /**
+   * Look up the account workers.dev subdomain when a first publish reports no URL and
+   * `workersDevSubdomain` is not set. A failed lookup resolves to undefined or throws.
+   */
+  resolveWorkersDevSubdomain?: () => Promise<string | undefined>;
+  /**
    * Operator-provided workers.dev subdomain that may receive readiness credentials even when
    * Wrangler cannot report a preview URL. Cached/project-controlled values must not be used here.
    */
@@ -1988,11 +1993,38 @@ async function bootstrapFirstDeployment(
   const desiredMetadata = parseCloudflareVersionMessage(options.message);
   const desiredTriggerConfig = desiredTriggerConfigFor(desiredMetadata, options.configPath);
   const reportedUrl = published?.previewUrl ?? published?.workersDevUrl;
-  const reportedOrConfiguredUrl =
+  let reportedOrConfiguredUrl =
     reportedUrl ??
     (desiredTriggerConfig.workers_dev
       ? workersDevReadinessUrl(options.workerName, options.workersDevSubdomain)
       : customRouteReadinessUrl(desiredTriggerConfig.routes));
+  if (
+    versionId &&
+    !reportedOrConfiguredUrl &&
+    desiredTriggerConfig.workers_dev &&
+    options.resolveWorkersDevSubdomain
+  ) {
+    // A publish over a Worker with workers.dev disabled, such as the draft that
+    // `secret put` creates, reports no URL. Trigger synchronization enables
+    // workers.dev below, so the readiness URL needs only the account subdomain.
+    // The lookup can run the uploader to read the session token.
+    if (!options.verifyUploader()) {
+      return {
+        ok: false,
+        reason: 'uploader-changed',
+        versionId,
+        previousVersionId,
+        rollback: 'unsafe',
+      };
+    }
+    let subdomain: string | undefined;
+    try {
+      subdomain = await options.resolveWorkersDevSubdomain();
+    } catch {
+      subdomain = undefined;
+    }
+    reportedOrConfiguredUrl = workersDevReadinessUrl(options.workerName, subdomain);
+  }
   if (!versionId || !reportedOrConfiguredUrl) {
     return {
       ok: false,
