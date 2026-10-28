@@ -59,7 +59,7 @@ import { deployChildEnv, resolveDeployTransport } from './deploy-transport.ts';
 import type { CloudflareDeployDeps, DeployWranglerRun } from './deploy-types.ts';
 import { type CliLogger } from './log-file.ts';
 import { createSpinner, getErrorMessage } from './output.ts';
-import { resolvePinnedComplianceRegion, type ComplianceRegion } from './provision.ts';
+import { resolveWorkersDevComplianceRegion, type ComplianceRegion } from './provision.ts';
 import {
   acknowledgeWranglerManagedQueueRemovals,
   readWranglerPublishedTrafficSnapshot,
@@ -137,6 +137,8 @@ function logCloudflareAuthFailure(error: unknown): void {
 
 type CloudflareDeployConnection = {
   apiBaseUrl: string;
+  /** The workers.dev region, pinned with the API base. Undefined if it does not resolve. */
+  complianceRegion: ComplianceRegion | undefined;
   usesCf: boolean;
   cfUploaderIsPinned: () => boolean;
   assertUploaderStillPinned: () => boolean;
@@ -171,6 +173,11 @@ export async function connectCloudflareDeployAccount(options: {
     log.error(`deploy: ${getErrorMessage(error)}`);
     return null;
   }
+  // Pin the region from the same inputs, before project code can edit the root config.
+  const complianceRegion = resolveWorkersDevComplianceRegion(
+    process.env,
+    readWranglerTopLevelString(rootConfig, 'compliance_region'),
+  );
   // Pin the uploaders before the first authenticated command, including account discovery.
   const pins = createCloudflareUploaderPins(root, deps);
   let accountId =
@@ -208,6 +215,7 @@ export async function connectCloudflareDeployAccount(options: {
   return {
     ...pins,
     apiBaseUrl,
+    complianceRegion,
     accountId,
     workersDevSubdomain,
     readinessAccessOrigin,
@@ -314,6 +322,8 @@ export function cloudflareCandidateActivationOptions(options: {
   uploadConfigPath: string;
   accountId: string;
   apiBaseUrl: string;
+  /** The workers.dev region that the connection pinned. Undefined if it did not resolve. */
+  complianceRegion: ComplianceRegion | undefined;
   workerName: string;
   workersDevSubdomain: string | undefined;
   /** Validated operator origin from the deploy connection. */
@@ -383,17 +393,9 @@ export function cloudflareCandidateActivationOptions(options: {
     readinessHeaders: cloudflareWorkerReadinessHeaders(),
     workersDevSubdomain,
     resolveWorkersDevSubdomain: async () => {
-      let complianceRegion: ComplianceRegion;
-      try {
-        // The same rules that pinned the deploy's API base.
-        complianceRegion = resolvePinnedComplianceRegion(
-          process.env,
-          readWranglerTopLevelString(
-            parseRootWranglerConfig(options.rootConfigPath),
-            'compliance_region',
-          ),
-        );
-      } catch {
+      const { complianceRegion } = options;
+      // Without a region, the host is unknown. Do not guess one.
+      if (complianceRegion === undefined) {
         return { ok: false, reason: 'unavailable' };
       }
       return readCloudflareWorkersDevSubdomain({
@@ -639,7 +641,7 @@ function formatCloudflareActivationFailure(
         // URL, which stays off until a trigger synchronization succeeds.
         return formatCloudflarePublishWithoutUrl(
           `Cloudflare published the first Worker deployment as version ${result.versionId}`,
-          `If the app uses workers.dev, turn on workers.dev for this Worker in the Cloudflare dashboard, and set CLOUDFLARE_WORKERS_SUBDOMAIN to your account subdomain ${WORKERS_SUBDOMAIN_EXAMPLE}.`,
+          `If the app uses workers.dev, enable workers.dev for this Worker in the Cloudflare dashboard. Then set CLOUDFLARE_WORKERS_SUBDOMAIN to your account subdomain ${WORKERS_SUBDOMAIN_EXAMPLE}.`,
         );
       }
       return [

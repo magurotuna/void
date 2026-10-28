@@ -315,18 +315,28 @@ export function resolvePinnedApiBaseUrl(
 }
 
 /**
- * The effective compliance region, resolved with the same rules as
- * {@link resolvePinnedApiBaseUrl}. Invalid or conflicting values throw.
+ * The compliance region that names the workers.dev host, resolved like wrangler's
+ * `getComplianceRegionSubdomain`. It reads the same inputs as {@link resolvePinnedApiBaseUrl},
+ * but a direct API base does not skip the region checks, because the base does not name the
+ * workers.dev host. Returns undefined for an invalid or conflicting region, so that a caller
+ * does not guess a host. Without a direct base, the API base resolution fails first.
  */
-export function resolvePinnedComplianceRegion(
+export function resolveWorkersDevComplianceRegion(
   env: NodeJS.ProcessEnv = process.env,
   configComplianceRegion?: string,
-): ComplianceRegion {
-  const configRegion =
-    configComplianceRegion !== undefined
-      ? assertComplianceChoice(configComplianceRegion, 'the Cloudflare config "compliance_region"')
-      : undefined;
-  return resolveComplianceRegion(env, configRegion);
+): ComplianceRegion | undefined {
+  try {
+    const configRegion =
+      configComplianceRegion !== undefined
+        ? assertComplianceChoice(
+            configComplianceRegion,
+            'the Cloudflare config "compliance_region"',
+          )
+        : undefined;
+    return resolveComplianceRegion(env, configRegion);
+  } catch {
+    return undefined;
+  }
 }
 
 /** `WRANGLER_API_ENVIRONMENT` like wrangler: absent means production; other values fail. */

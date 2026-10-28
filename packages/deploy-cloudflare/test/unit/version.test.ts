@@ -560,6 +560,38 @@ describe('Cloudflare version activation', () => {
     },
   );
 
+  // The CLI marks traffic settings that the config leaves unset as preserved.
+  // Most projects do not set workers_dev, so this is the usual message.
+  it.each([true, false])(
+    'looks up the account subdomain for the CLI message that preserves unset traffic (atomic=%s)',
+    async (atomic) => {
+      const fixture = sdkDraftActivation();
+      const publishedTriggers: Array<Record<string, unknown>> = [];
+      const resolveWorkersDevSubdomain = vi.fn(async () => ({
+        ok: true as const,
+        subdomain: 'example',
+      }));
+      const result = await activateCloudflareVersion({
+        ...fixture.options,
+        message: encodeCloudflareVersionMessage(
+          [],
+          triggersWith({
+            preserveWorkersDev: true,
+            preservePreviewUrls: true,
+            preserveRoutes: true,
+          }),
+        ),
+        runWrangler: urlLessDraftPublish(fixture, publishedTriggers),
+        atomic,
+        resolveWorkersDevSubdomain,
+      });
+      expect(result.ok ? null : result.reason).toBeNull();
+      expect(result).toMatchObject({ ok: true, previewUrl: 'https://app.example.workers.dev' });
+      expect(resolveWorkersDevSubdomain).toHaveBeenCalledOnce();
+      expect(publishedTriggers).toMatchObject([{ workers_dev: true }]);
+    },
+  );
+
   it('sends Access headers only to the FedRAMP High workers.dev host from the lookup', async () => {
     const fixture = sdkDraftActivation();
     const probes: Array<{ url: string; secret: string | null }> = [];
