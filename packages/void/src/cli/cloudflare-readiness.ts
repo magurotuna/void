@@ -6,7 +6,8 @@ import {
   type CloudflareWorkersDevSubdomainLookup,
 } from '@void/deploy-cloudflare';
 import { dirname, join } from 'pathslash';
-import { PlatformCloudflareClient } from './platform-cloudflare.ts';
+import { isCleanCloudflareExit } from './cloudflare-process.ts';
+import type { DeployWranglerRun } from './deploy-types.ts';
 import type { ComplianceRegion } from './provision.ts';
 
 const STATE_FILE = join('.void', 'cloudflare.json');
@@ -77,28 +78,31 @@ export function resolveCloudflareReadinessAccessOrigin(
  * `.fed` for FedRAMP High, as Wrangler does. A failed lookup resolves `unavailable`.
  */
 export async function readCloudflareWorkersDevSubdomain(options: {
-  accountId: string;
-  apiBaseUrl: string;
+  configPath: string;
   complianceRegion: ComplianceRegion;
-  getToken: () => Promise<string | null>;
+  runWrangler: DeployWranglerRun;
   verifyUploader: () => boolean;
-  fetcher?: typeof fetch;
 }): Promise<CloudflareWorkersDevSubdomainLookup> {
-  // The token read runs the pinned uploader.
+  // The authenticated read runs in the pinned transport, keeping credentials in its process.
   if (!options.verifyUploader()) {
     return { ok: false, reason: 'uploader-changed' };
   }
-  const token = await options.getToken();
-  if (!token) {
-    return { ok: false, reason: 'unavailable' };
-  }
   let label: string;
   try {
-    const client = new PlatformCloudflareClient(token, {
-      apiBase: options.apiBaseUrl,
-      fetcher: options.fetcher,
-    });
-    label = await client.getWorkersSubdomain(options.accountId);
+    const result = await options.runWrangler(
+      { type: 'workers.subdomain.get', configPath: options.configPath },
+      { capture: true },
+    );
+    if (
+      !isCleanCloudflareExit(result) ||
+      !result.data ||
+      typeof result.data !== 'object' ||
+      !('subdomain' in result.data) ||
+      typeof result.data.subdomain !== 'string'
+    ) {
+      return { ok: false, reason: 'unavailable' };
+    }
+    label = result.data.subdomain;
   } catch {
     return { ok: false, reason: 'unavailable' };
   }

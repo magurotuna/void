@@ -399,10 +399,9 @@ export function cloudflareCandidateActivationOptions(options: {
         return { ok: false, reason: 'unavailable' };
       }
       return readCloudflareWorkersDevSubdomain({
-        accountId,
-        apiBaseUrl: options.apiBaseUrl,
+        configPath,
         complianceRegion,
-        getToken: () => runWranglerAuthToken(runWrangler, configPath),
+        runWrangler,
         verifyUploader: options.assertUploaderStillPinned,
       });
     },

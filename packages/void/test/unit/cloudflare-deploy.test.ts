@@ -304,6 +304,7 @@ describe('Cloudflare activation diagnostics', () => {
       ...project,
       accountId: 'account-a',
       apiBaseUrl: 'https://api.example.test/client/v4',
+      readinessAccessOrigin: undefined,
       complianceRegion,
       workerName: 'site',
       workersDevSubdomain: undefined,
@@ -329,29 +330,19 @@ describe('Cloudflare activation diagnostics', () => {
       vi.stubEnv('CLOUDFLARE_COMPLIANCE_REGION', undefined);
       const project = lookupProject(rootRegion);
       const operations: Array<CloudflareOperation> = [];
-      const runWrangler: DeployWranglerRun = (operation) => {
+      const runWrangler: DeployWranglerRun = (operation, options) => {
         operations.push(operation);
-        return { ...cleanExit, data: { type: 'api_token', token: 'synthetic-token' } };
+        expect(options).toEqual({ capture: true });
+        return { ...cleanExit, data: { subdomain: 'team' } };
       };
-      const fetcher = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
-        expect(String(url)).toBe(
-          'https://api.example.test/client/v4/accounts/account-a/workers/subdomain',
-        );
-        expect(new Headers(init?.headers).get('authorization')).toBe('Bearer synthetic-token');
-        return Response.json({ success: true, result: { subdomain: 'team' } });
+      const options = lookupOptions(project, region, runWrangler);
+      await expect(options.resolveWorkersDevSubdomain?.()).resolves.toEqual({
+        ok: true,
+        subdomain,
       });
-      vi.stubGlobal('fetch', fetcher);
-      try {
-        const options = lookupOptions(project, region, runWrangler);
-        await expect(options.resolveWorkersDevSubdomain?.()).resolves.toEqual({
-          ok: true,
-          subdomain,
-        });
-        expect(operations).toEqual([{ type: 'auth.token', configPath: project.uploadConfigPath }]);
-        expect(fetcher).toHaveBeenCalledOnce();
-      } finally {
-        vi.unstubAllGlobals();
-      }
+      expect(operations).toEqual([
+        { type: 'workers.subdomain.get', configPath: project.uploadConfigPath },
+      ]);
     },
   );
 
@@ -1180,14 +1171,6 @@ describe('existing Cloudflare site handoff', () => {
       configPath,
       JSON.stringify({ ...parseRootWranglerConfig(configPath), compliance_region: 'fedramp_high' }),
     );
-    const requests: Array<string> = [];
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async (url: string | URL | Request) => {
-        requests.push(String(url));
-        return Response.json({ success: true, result: { subdomain: 'team' } });
-      }),
-    );
     const lookups: Array<unknown> = [];
     const { deps } = harness({
       runBuild: () => {
@@ -1208,8 +1191,8 @@ describe('existing Cloudflare site handoff', () => {
     });
     const runWrangler = deps.runWrangler!;
     deps.runWrangler = (operation, options) =>
-      operation.type === 'auth.token'
-        ? { ...cleanExit, data: { type: 'api_token', token: 'synthetic-token' } }
+      operation.type === 'workers.subdomain.get'
+        ? { ...cleanExit, data: { subdomain: 'team' } }
         : runWrangler(operation, options);
     try {
       await runCloudflareDeploy(root, { platform: 'cloudflare' }, silentCliLog, deps);
@@ -1217,9 +1200,6 @@ describe('existing Cloudflare site handoff', () => {
       vi.unstubAllGlobals();
     }
     expect(lookups).toEqual([{ ok: true, subdomain: 'team.fed' }]);
-    expect(requests).toEqual([
-      'https://api.fed.cloudflare.com/client/v4/accounts/personal/workers/subdomain',
-    ]);
   });
 
   it('allows an explicit atomic deploy after the Durable Object migration preflight', async () => {

@@ -141,33 +141,26 @@ describe('Cloudflare readiness Access origin', () => {
 });
 
 describe('Cloudflare account subdomain lookup', () => {
-  const API = 'https://api.example.test/client/v4';
-
+  const cleanExit = { status: 0, stdout: '', stderr: '' };
   function lookup(
     overrides: Partial<Parameters<typeof readCloudflareWorkersDevSubdomain>[0]> = {},
-  ): ReturnType<typeof readCloudflareWorkersDevSubdomain> {
+  ) {
     return readCloudflareWorkersDevSubdomain({
-      accountId: 'account-a',
-      apiBaseUrl: API,
+      configPath: 'dist/wrangler.json',
       complianceRegion: 'public',
-      getToken: async () => 'synthetic-token',
+      runWrangler: async () => ({ ...cleanExit, data: { subdomain: 'team' } }),
       verifyUploader: () => true,
-      fetcher: async () => Response.json({ success: true, result: { subdomain: 'team' } }),
       ...overrides,
     });
   }
 
-  it('reads and normalizes the subdomain with the session bearer', async () => {
-    const fetcher = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
-      expect(String(url)).toBe(`${API}/accounts/account-a/workers/subdomain`);
-      expect(new Headers(init?.headers).get('authorization')).toBe('Bearer synthetic-token');
-      return Response.json({ success: true, result: { subdomain: 'My-Team' } });
-    });
-    await expect(lookup({ apiBaseUrl: `${API}/`, fetcher })).resolves.toEqual({
-      ok: true,
-      subdomain: 'my-team',
-    });
-    expect(fetcher).toHaveBeenCalledOnce();
+  it('reads and normalizes the subdomain through the pinned authenticated transport', async () => {
+    const runWrangler = vi.fn(async () => ({ ...cleanExit, data: { subdomain: 'My-Team' } }));
+    await expect(lookup({ runWrangler })).resolves.toEqual({ ok: true, subdomain: 'my-team' });
+    expect(runWrangler).toHaveBeenCalledExactlyOnceWith(
+      { type: 'workers.subdomain.get', configPath: 'dist/wrangler.json' },
+      { capture: true },
+    );
   });
 
   it('adds the FedRAMP High suffix to the account subdomain, as Wrangler does', async () => {
@@ -177,50 +170,38 @@ describe('Cloudflare account subdomain lookup', () => {
     });
   });
 
-  it('reports an uploader change without reading a token', async () => {
-    const getToken = vi.fn(async () => 'synthetic-token');
-    const fetcher = vi.fn<typeof fetch>();
-    await expect(lookup({ getToken, verifyUploader: () => false, fetcher })).resolves.toEqual({
+  it('reports an uploader change without calling the transport', async () => {
+    const runWrangler = vi.fn();
+    await expect(lookup({ runWrangler, verifyUploader: () => false })).resolves.toEqual({
       ok: false,
       reason: 'uploader-changed',
     });
-    expect(getToken).not.toHaveBeenCalled();
-    expect(fetcher).not.toHaveBeenCalled();
-  });
-
-  it('does not call Cloudflare without a session bearer', async () => {
-    const fetcher = vi.fn<typeof fetch>();
-    await expect(lookup({ getToken: async () => null, fetcher })).resolves.toEqual({
-      ok: false,
-      reason: 'unavailable',
-    });
-    expect(fetcher).not.toHaveBeenCalled();
+    expect(runWrangler).not.toHaveBeenCalled();
   });
 
   it.each([
-    {
-      label: 'HTTP 403',
-      respond: () =>
-        Response.json(
-          { success: false, errors: [{ code: 10000, message: 'Authentication error' }] },
-          { status: 403 },
-        ),
-    },
-    { label: 'empty', respond: () => Response.json({ success: true, result: { subdomain: '' } }) },
-    {
-      label: 'invalid',
-      respond: () => Response.json({ success: true, result: { subdomain: 'not a subdomain' } }),
-    },
-    {
-      label: 'network',
-      respond: () => {
-        throw new TypeError('fetch failed');
-      },
-    },
-  ])('reports the lookup as unavailable for a $label response', async ({ respond }) => {
-    await expect(lookup({ fetcher: async () => respond() })).resolves.toEqual({
+    { ...cleanExit, status: 1, data: { subdomain: 'team' } },
+    { ...cleanExit, signal: 'SIGTERM' as const, data: { subdomain: 'team' } },
+    { ...cleanExit, error: 'spawn failed', data: { subdomain: 'team' } },
+    cleanExit,
+    { ...cleanExit, data: null },
+    { ...cleanExit, data: { subdomain: '' } },
+    { ...cleanExit, data: { subdomain: 42 } },
+    { ...cleanExit, data: { subdomain: 'not a subdomain' } },
+  ])('rejects an unsuccessful or invalid transport result: %j', async (result) => {
+    await expect(lookup({ runWrangler: async () => result })).resolves.toEqual({
       ok: false,
       reason: 'unavailable',
     });
+  });
+
+  it('reports a thrown transport failure as unavailable', async () => {
+    await expect(
+      lookup({
+        runWrangler: async () => {
+          throw new Error('fetch failed');
+        },
+      }),
+    ).resolves.toEqual({ ok: false, reason: 'unavailable' });
   });
 });
